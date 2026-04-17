@@ -1,0 +1,17 @@
+[project]
+name = "zte-f50-monitor"
+version = "0.1.0"
+description = "Monitor ZTE F50 modem tower statistics"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "python-dotenv>=1.0.1",
+    "requests>=2.31.0",
+]
+
+[project.scripts]
+zte-monitor = "zte_f50_monitor:main"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
