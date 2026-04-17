@@ -10,12 +10,13 @@ import hashlib
 import os
 import shutil
 from collections import OrderedDict
+from pathlib import Path
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 from dotenv import load_dotenv
 
-# Load configuration from .env if present
-load_dotenv()
+# Load .env from the same directory as this script, regardless of CWD
+load_dotenv(Path(__file__).parent / '.env')
 
 
 # ── crypto helpers ────────────────────────────────────────────────────────────
