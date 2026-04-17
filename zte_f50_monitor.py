@@ -11,7 +11,7 @@ import os
 import shutil
 from collections import OrderedDict
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -56,14 +56,6 @@ def _rsrp_color(rsrp: Optional[int]) -> str:
     if rsrp >= -90:  return YELLOW
     return RED
 
-def _rsrp_rating(rsrp: Optional[int]) -> str:
-    if rsrp is None:    return '?'
-    if rsrp >= -70:     return 'Excellent'
-    if rsrp >= -80:     return 'Good'
-    if rsrp >= -90:     return 'Fair'
-    if rsrp >= -100:    return 'Poor'
-    return 'Very Poor'
-
 def _bars(rsrp: Optional[int]) -> str:
     if rsrp is None: return '░░░░░'
     if rsrp >= -70:  n = 5
@@ -81,6 +73,41 @@ def _ago(ts: float) -> str:
 
 def _cols() -> int:
     return shutil.get_terminal_size((80, 24)).columns
+
+
+# ── signal assessment ───────────────────────────────────────────────────────────
+
+def _get_signal_assessment(rsrp: Optional[int], snr: Optional[int]) -> Tuple[str, str, str]:
+    """
+    Assesses signal quality based on RSRP (strength) and SNR (quality).
+    Returns a tuple of (rating, description, color).
+    """
+    # Handle missing data
+    if rsrp is None or snr is None:
+        return ("No Data", "Waiting for signal data... (｡•́_•̀｡)", DIM)
+
+    # Determine rating and description based on RSRP and SNR combinations
+    if rsrp >= -80:  # Strong signal
+        if snr > 20:
+            return ("Excellent", "Super strong signal! (｡◕‿◕｡)", GREEN)
+        elif snr > 10:
+            return ("Good", "Strong signal, very clear! (◕‿◕)", GREEN)
+        else:
+            return ("Fair", "Great signal strength, but some noise. (｡•́︿•̀｡)", YELLOW)
+    elif rsrp >= -90:  # Good signal
+        if snr > 20:
+            return ("Good", "Good signal, very clean! (◕‿◕)", GREEN)
+        elif snr > 10:
+            return ("Fair", "Decent connection. (๑•̀ㅂ•́)و✧", YELLOW)
+        else:
+            return ("Poor", "Signal is okay, but it's pretty noisy. (´•̥ ω •̥` )", RED)
+    elif rsrp >= -100:  # Weak signal
+        if snr > 10:
+            return ("Fair", "Weak signal, but it's clean! Trying my best... (｡•́_•̀｡)", YELLOW)
+        else:
+            return ("Poor", "Signal is weak and noisy. (╥﹏╥)", RED)
+    else:  # Very poor signal
+        return ("Very Poor", "Signal is very weak and noisy. (╥﹏╥)", RED)
 
 
 # ── modem client ──────────────────────────────────────────────────────────────
@@ -230,8 +257,11 @@ def render(stats: Dict[str, Any], seen: 'OrderedDict[str, dict]',
 
         rsrp   = stats.get('lte_rsrp')
         rsrp_i = int(rsrp) if rsrp not in (None, '', 'null') else None
-        rating = _rsrp_rating(rsrp_i)
-        color  = _rsrp_color(rsrp_i)
+        snr    = stats.get('Lte_snr')
+        snr_i  = int(snr) if snr not in (None, '', 'null') else None
+
+        # New assessment based on RSRP and SNR
+        rating, description, rating_color = _get_signal_assessment(rsrp_i, snr_i)
 
         band     = _val(stats.get('Lte_bands'))
         earfcn   = _val(stats.get('Lte_fcn'))
@@ -239,21 +269,22 @@ def render(stats: Dict[str, Any], seen: 'OrderedDict[str, dict]',
         bw_str   = f'{int(bw_khz)//1000} MHz' if bw_khz else '—'
         pci      = _val(stats.get('Lte_pci'))
         cell_id  = _val(stats.get('Lte_cell_id'))
-        snr      = _val(stats.get('Lte_snr'))
         rsrq     = _val(stats.get('lte_rsrq'))
         rssi_dbm = _val(stats.get('lte_rssi'))
         ca       = _val(stats.get('Lte_ca_status'))
 
         bar_str  = _bars(rsrp_i)
-        rating_c = f'{color}{BOLD}{rating}{RESET}'
+        rating_c = f'{rating_color}{BOLD}{rating}{RESET}'
+        description_c = f'{DIM}{description}{RESET}'
 
         lines.append(_divider(W, 'SERVING CELL'))
         lines.append(f'  {BOLD}Network{RESET}  {nt}   '
                      f'{bar_str}  {rating_c}')
+        lines.append(f'  {description_c}')
         lines.append('')
-        lines.append(_kv('RSRP', f'{color}{rsrp_i if rsrp_i is not None else "—"} dBm{RESET}'))
+        lines.append(_kv('RSRP', f'{_rsrp_color(rsrp_i)}{rsrp_i if rsrp_i is not None else "—"} dBm{RESET}'))
         lines.append(_kv('RSRQ', f'{rsrq} dB'))
-        lines.append(_kv('SNR',  f'{snr} dB'))
+        lines.append(_kv('SNR',  f'{snr_i if snr_i is not None else "—"} dB'))
         lines.append(_kv('RSSI', f'{rssi_dbm} dBm'))
         lines.append(_kv('Band / EARFCN', f'B{band}  /  {earfcn}  ({bw_str})'))
         lines.append(_kv('Cell ID / PCI', f'{cell_id}  /  {pci}'))
