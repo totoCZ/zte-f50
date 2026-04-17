@@ -75,6 +75,65 @@ def _ago(ts: float) -> str:
 def _cols() -> int:
     return shutil.get_terminal_size((80, 24)).columns
 
+def _rsrq_color(rsrq: Optional[int]) -> str:
+    if rsrq is None: return DIM
+    if rsrq >= -6:   return GREEN
+    if rsrq >= -12:  return YELLOW
+    return RED
+
+def _snr_color(snr: Optional[int]) -> str:
+    if snr is None: return DIM
+    if snr >= 13:   return GREEN
+    if snr >= 0:    return YELLOW
+    return RED
+
+# LTE EARFCN → DL frequency (MHz). (band, offset_earfcn, dl_low_mhz)
+_LTE_DL_TABLE = {
+    1:  (0,     2110.0),
+    2:  (600,   1930.0),
+    3:  (1200,  1805.0),
+    4:  (1950,  2110.0),
+    5:  (2400,   869.0),
+    7:  (2750,  2620.0),
+    8:  (3450,   925.0),
+    12: (5010,   729.0),
+    13: (5180,   746.0),
+    17: (5730,   734.0),
+    20: (6150,   791.0),
+    25: (8040,  1930.0),
+    26: (8690,   859.0),
+    28: (9210,   758.0),
+    38: (37750, 2570.0),
+    40: (38650, 2300.0),
+    41: (39650, 2496.0),
+    42: (41590, 3400.0),
+    43: (43590, 3600.0),
+}
+
+def _earfcn_to_mhz(band: int, earfcn: int) -> Optional[float]:
+    """LTE EARFCN → DL centre frequency in MHz."""
+    entry = _LTE_DL_TABLE.get(band)
+    if entry is None:
+        return None
+    n_offs, f_low = entry
+    return round(f_low + 0.1 * (earfcn - n_offs), 2)
+
+def _nrarfcn_to_mhz(arfcn: int) -> float:
+    """NR-ARFCN → centre frequency in MHz (3GPP TS 38.104 Table 5.4.2.1-1)."""
+    if arfcn < 600000:
+        return round(arfcn * 0.005, 3)
+    if arfcn < 2016667:
+        return round(3000.0 + (arfcn - 600000) * 0.015, 3)
+    return round(24250.08 + (arfcn - 2016667) * 0.060, 3)
+
+def _is_nr_arfcn(earfcn: int) -> bool:
+    """LTE EARFCNs top out at 67835; anything higher is an NR-ARFCN."""
+    return earfcn > 67835
+
+def _decode_lte_cell_id(cell_id: int) -> Tuple[int, int]:
+    """Split 28-bit E-UTRAN Cell ID into (eNB_ID, sector_index)."""
+    return cell_id >> 8, cell_id & 0xFF
+
 
 # ── signal assessment ───────────────────────────────────────────────────────────
 
@@ -319,12 +378,18 @@ def render(stats: Dict[str, Any], seen: 'OrderedDict[str, dict]',
             nr_pci  = _val(stats.get('Nr_pci'))
             nr_bw   = _val(stats.get('Nr_band_widths'))
             
+            nr_freq_str = ''
+            try:
+                nr_freq_str = f'  ·  {_nrarfcn_to_mhz(int(nr_fcn))} MHz'
+            except (ValueError, TypeError):
+                pass
+
             lines.append(_divider(W, 'NR5G'))
             lines.append(_kv('RSRP', f'{_rsrp_color(nr_rsrp)}{nr_rsrp if nr_rsrp is not None else "—"} dBm{RESET}'))
-            lines.append(_kv('RSRQ', f'{_val(nr_rsrq)} dB'))
-            lines.append(_kv('SNR',  f'{nr_snr_i if nr_snr_i is not None else "—"} dB'))
+            lines.append(_kv('RSRQ', f'{_rsrq_color(int(nr_rsrq) if nr_rsrq not in (None,"","null") else None)}{_val(nr_rsrq)} dB{RESET}'))
+            lines.append(_kv('SNR',  f'{_snr_color(nr_snr_i)}{nr_snr_i if nr_snr_i is not None else "—"} dB{RESET}'))
             nr_band_str = f'n{nr_band}' if nr_band != '—' else '—'
-            lines.append(_kv('Band / ARFCN', f'{nr_band_str}  /  {nr_fcn}'))
+            lines.append(_kv('Band / ARFCN', f'{nr_band_str}  /  {nr_fcn}{nr_freq_str}'))
             lines.append(_kv('Cell ID / PCI', f'{_nr_cell_id(stats.get("Nr_cell_id"))}  /  {nr_pci}'))
             lines.append(_kv('Bandwidth', f'{nr_bw} MHz' if nr_bw != '—' else '—'))
             lines.append('')
@@ -344,45 +409,101 @@ def render(stats: Dict[str, Any], seen: 'OrderedDict[str, dict]',
             lte_cell_id = _val(stats.get('Lte_cell_id'))
             ca       = _val(stats.get('Lte_ca_status'))
 
+            lte_freq_str = ''
+            try:
+                f = _earfcn_to_mhz(int(lte_band), int(lte_fcn))
+                if f is not None:
+                    lte_freq_str = f'  ·  {f} MHz'
+            except (ValueError, TypeError):
+                pass
+
+            lte_cell_id_extra = ''
+            try:
+                cid = int(lte_cell_id)
+                enb, sector = _decode_lte_cell_id(cid)
+                lte_cell_id_extra = f'  {DIM}(eNB {enb}, s{sector}){RESET}'
+            except (ValueError, TypeError):
+                pass
+
+            lte_rsrq_i = int(lte_rsrq) if lte_rsrq not in (None, '', 'null') else None
+
             lines.append(_divider(W, 'LTE'))
             lines.append(_kv('RSRP', f'{_rsrp_color(lte_rsrp)}{lte_rsrp if lte_rsrp is not None else "—"} dBm{RESET}'))
-            lines.append(_kv('RSRQ', f'{_val(lte_rsrq)} dB'))
-            lines.append(_kv('SNR',  f'{lte_snr_i if lte_snr_i is not None else "—"} dB'))
+            lines.append(_kv('RSRQ', f'{_rsrq_color(lte_rsrq_i)}{_val(lte_rsrq)} dB{RESET}'))
+            lines.append(_kv('SNR',  f'{_snr_color(lte_snr_i)}{lte_snr_i if lte_snr_i is not None else "—"} dB{RESET}'))
             lines.append(_kv('RSSI', f'{_val(stats.get("lte_rssi"))} dBm'))
             lte_band_str = f'B{lte_band}' if lte_band != '—' else '—'
-            lines.append(_kv('Band / EARFCN', f'{lte_band_str}  /  {lte_fcn}  ({lte_bw_str})'))
-            lines.append(_kv('Cell ID / PCI', f'{lte_cell_id}  /  {lte_pci}'))
+            lines.append(_kv('Band / EARFCN', f'{lte_band_str}  /  {lte_fcn}  ({lte_bw_str}){lte_freq_str}'))
+            lines.append(_kv('Cell ID / PCI', f'{lte_cell_id}  /  {lte_pci}{lte_cell_id_extra}'))
             lines.append(_kv('CA', ca))
             lines.append('')
 
     # ── neighbor table ────────────────────────────────────────────────────────
     lines.append(_divider(W, f'NEIGHBORS  (last 60s — {len(seen)} cells)'))
 
-    # column widths
+    # Collect serving cell identifiers for neighbor annotation
+    serving_lte_pci = str(stats.get('Lte_pci', '')).strip()
+    serving_lte_fcn = str(stats.get('Lte_fcn', '')).strip()
+    serving_nr_pci  = str(stats.get('Nr_pci', '')).strip()
+    serving_nr_fcn  = str(stats.get('Nr_fcn', '')).strip()
+
+    def _nb_is_serving(cell: dict) -> bool:
+        earfcn_s = str(cell.get('earfcn', '')).strip()
+        pci_s    = str(cell.get('pci', '')).strip()
+        try:
+            nr = _is_nr_arfcn(int(earfcn_s))
+        except (ValueError, TypeError):
+            nr = False
+        if nr:
+            return pci_s == serving_nr_pci and earfcn_s == serving_nr_fcn
+        return pci_s == serving_lte_pci and earfcn_s == serving_lte_fcn
+
+    def _nb_freq(cell: dict) -> str:
+        try:
+            earfcn = int(cell.get('earfcn', ''))
+            band   = int(cell.get('band', ''))
+            if _is_nr_arfcn(earfcn):
+                return f'{_nrarfcn_to_mhz(earfcn):.0f}'
+            f = _earfcn_to_mhz(band, earfcn)
+            return f'{f:.0f}' if f is not None else '—'
+        except (ValueError, TypeError):
+            return '—'
+
     lines.append(
         f'  {BOLD}'
-        f'{"Band":<6}{"EARFCN":<9}{"PCI":<6}'
-        f'{"RSRP":>7}{"RSRQ":>7}{"SINR":>7}'
+        f'{"T":<3}{"Band":<6}{"EARFCN":<9}{"PCI":<6}'
+        f'{"Freq":>7}{"RSRP":>7}{"RSRQ":>7}{"SINR":>7}'
         f'  {"Seen":>8}'
         f'{RESET}'
     )
-    lines.append(f'  {DIM}{"─"*6}{"─"*9}{"─"*6}{"─"*7}{"─"*7}{"─"*7}  {"─"*8}{RESET}')
+    lines.append(f'  {DIM}{"─"*3}{"─"*6}{"─"*9}{"─"*6}{"─"*7}{"─"*7}{"─"*7}{"─"*7}  {"─"*8}{RESET}')
 
     if not seen:
         lines.append(f'  {DIM}no neighbors yet{RESET}')
     else:
         for key, cell in seen.items():
             rsrp_n = int(cell['rsrp']) if cell.get('rsrp', '') not in ('', None) else None
-            c = _rsrp_color(rsrp_n)
+            rsrq_n = int(cell['rsrq']) if cell.get('rsrq', '') not in ('', None) else None
+            sinr_n = int(cell['sinr']) if cell.get('sinr', '') not in ('', None) else None
+            serving = _nb_is_serving(cell)
             ago = _ago(cell['_ts'])
+            try:
+                nr = _is_nr_arfcn(int(cell.get('earfcn', 0)))
+            except (ValueError, TypeError):
+                nr = False
+            t_label = f'{"NR" if nr else "L":<3}'
+            pci_str = _val(cell.get('pci')) + ('*' if serving else ' ')
+            freq_str = _nb_freq(cell)
             lines.append(
                 f'  '
+                f'{DIM if not serving else BOLD}{t_label}{RESET}'
                 f'{_val(cell.get("band")):<6}'
                 f'{_val(cell.get("earfcn")):<9}'
-                f'{_val(cell.get("pci")):<6}'
-                f'{c}{_val(cell.get("rsrp")):>7}{RESET}'
-                f'{_val(cell.get("rsrq")):>7}'
-                f'{_val(cell.get("sinr")):>7}'
+                f'{CYAN if serving else ""}{pci_str:<6}{RESET}'
+                f'{freq_str:>7}'
+                f'{_rsrp_color(rsrp_n)}{_val(cell.get("rsrp")):>7}{RESET}'
+                f'{_rsrq_color(rsrq_n)}{_val(cell.get("rsrq")):>7}{RESET}'
+                f'{_snr_color(sinr_n)}{_val(cell.get("sinr")):>7}{RESET}'
                 f'  {DIM}{ago:>8}{RESET}'
             )
 
