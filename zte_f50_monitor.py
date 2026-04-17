@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 ZTE F50 Modem Tower Stats Monitor — iftop-style TUI
+Supports LTE, NSA (LTE+NR), and SA (NR) modes.
 """
 
 import requests
@@ -193,13 +194,22 @@ class ZTEF50Monitor:
         try:
             ts = int(time.time() * 1000)
             merged: Dict[str, Any] = {}
+            
+            # Construct command list including NR (5G) parameters
+            # Note: ZTE APIs often return everything if multi_data=1, but explicit is safer
+            lte_cmd = ('network_type,rssi,rscp,lte_rsrp,lte_snr,ecio,lte_pci,cell_id,'
+                       'Z5g_rsrp,Z5g_snr,Z5g_SINR,Z5g_CELL_ID,lte_rsrq,lte_rssi,'
+                       'Lte_bands,Lte_fcn,Lte_bands_widths,Lte_cell_id')
+            
+            nr_cmd = ('Nr_fcn,Nr_pci,Nr_bands,Nr_band_widths,Nr_cell_id,'
+                      'Nr_signal_strength,Nr_snr,nr_rsrp,nr_rsrq,nr_rssi')
+
             for cmd, extra in [
-                ('network_type,rssi,rscp,lte_rsrp,lte_snr,ecio,lte_pci,cell_id,'
-                 'Z5g_rsrp,Z5g_snr,Z5g_SINR,Z5g_CELL_ID,lte_rsrq,lte_rssi',
-                 {'multi_data': '1', '_': str(ts)}),
+                (lte_cmd, {'multi_data': '1', '_': str(ts)}),
+                (nr_cmd, {'multi_data': '1', '_': str(ts + 1)}),
                 ('network_information,Lte_ca_status',
-                 {'multi_data': '1', '_': str(ts + 1)}),
-                ('neighbor_cell_info', {'_': str(ts + 2)}),
+                 {'multi_data': '1', '_': str(ts + 2)}),
+                ('neighbor_cell_info', {'_': str(ts + 3)}),
             ]:
                 d = self._get(cmd, extra)
                 if d:
@@ -247,45 +257,103 @@ def render(stats: Dict[str, Any], seen: 'OrderedDict[str, dict]',
                      f'{DIM}(last data {_ago(last_ok)} ago){RESET}')
         lines.append('')
     else:
-        # ── serving cell ──────────────────────────────────────────────────────
+        # ── mode detection ──────────────────────────────────────────────────────
         nt_raw = stats.get('network_type')
-        nt     = NETWORK_TYPES.get(nt_raw, str(nt_raw)) if isinstance(nt_raw, int) else _val(nt_raw)
+        nt_str = NETWORK_TYPES.get(nt_raw, str(nt_raw)) if isinstance(nt_raw, int) else _val(nt_raw)
+        
+        # Detect NR presence
+        nr_rsrp_raw = stats.get('nr_rsrp')
+        has_nr = nr_rsrp_raw not in (None, '', 'null')
+        
+        # Detect LTE presence
+        lte_rsrp_raw = stats.get('lte_rsrp')
+        has_lte = lte_rsrp_raw not in (None, '', 'null')
 
-        rsrp   = stats.get('lte_rsrp')
-        rsrp_i = int(rsrp) if rsrp not in (None, '', 'null') else None
-        snr    = stats.get('Lte_snr')
-        snr_i  = int(snr) if snr not in (None, '', 'null') else None
+        # Determine display mode
+        if has_nr and has_lte:
+            mode_str = "LTE + NR5G (NSA)"
+        elif has_nr:
+            mode_str = "NR5G (SA)"
+            nt_str = "NR5G-SA" # Override network type string if SA
+        elif has_lte:
+            mode_str = "LTE"
+        else:
+            mode_str = "No Service"
 
-        # New assessment based on RSRP and SNR
-        rating, description, rating_color = _get_signal_assessment(rsrp_i, snr_i)
+        # ── primary status line ─────────────────────────────────────────────────
+        # Prefer NR signal bars if available, else LTE
+        primary_rsrp = None
+        if has_nr:
+            primary_rsrp = int(nr_rsrp_raw) if nr_rsrp_raw else None
+        elif has_lte:
+            primary_rsrp = int(lte_rsrp_raw) if lte_rsrp_raw else None
+            
+        bar_str = _bars(primary_rsrp)
+        
+        # Assessment for primary connection
+        # Use NR SNR if available
+        snr_val = None
+        if has_nr:
+            snr_raw = stats.get('Nr_snr')
+            snr_val = int(snr_raw) if snr_raw not in (None, '', 'null') else None
+        elif has_lte:
+            snr_raw = stats.get('Lte_snr')
+            snr_val = int(snr_raw) if snr_raw not in (None, '', 'null') else None
 
-        band     = _val(stats.get('Lte_bands'))
-        earfcn   = _val(stats.get('Lte_fcn'))
-        bw_khz   = stats.get('Lte_bands_widths')
-        bw_str   = f'{int(bw_khz)//1000} MHz' if bw_khz else '—'
-        pci      = _val(stats.get('Lte_pci'))
-        cell_id  = _val(stats.get('Lte_cell_id'))
-        rsrq     = _val(stats.get('lte_rsrq'))
-        rssi_dbm = _val(stats.get('lte_rssi'))
-        ca       = _val(stats.get('Lte_ca_status'))
-
-        bar_str  = _bars(rsrp_i)
+        rating, description, rating_color = _get_signal_assessment(primary_rsrp, snr_val)
         rating_c = f'{rating_color}{BOLD}{rating}{RESET}'
         description_c = f'{DIM}{description}{RESET}'
 
-        lines.append(_divider(W, 'SERVING CELL'))
-        lines.append(f'  {BOLD}Network{RESET}  {nt}   '
-                     f'{bar_str}  {rating_c}')
+        lines.append(_divider(W, 'CONNECTION'))
+        lines.append(f'  {BOLD}Network{RESET}  {nt_str}   {bar_str}  {rating_c}')
         lines.append(f'  {description_c}')
         lines.append('')
-        lines.append(_kv('RSRP', f'{_rsrp_color(rsrp_i)}{rsrp_i if rsrp_i is not None else "—"} dBm{RESET}'))
-        lines.append(_kv('RSRQ', f'{rsrq} dB'))
-        lines.append(_kv('SNR',  f'{snr_i if snr_i is not None else "—"} dB'))
-        lines.append(_kv('RSSI', f'{rssi_dbm} dBm'))
-        lines.append(_kv('Band / EARFCN', f'B{band}  /  {earfcn}  ({bw_str})'))
-        lines.append(_kv('Cell ID / PCI', f'{cell_id}  /  {pci}'))
-        lines.append(_kv('CA', ca))
-        lines.append('')
+
+        # ── NR5G SECTION (SA or NSA Secondary) ───────────────────────────────────
+        if has_nr:
+            nr_rsrp = int(nr_rsrp_raw) if nr_rsrp_raw else None
+            nr_rsrq = stats.get('nr_rsrq')
+            nr_snr  = stats.get('Nr_snr')
+            nr_snr_i = int(nr_snr) if nr_snr not in (None, '', 'null') else None
+            
+            nr_band = _val(stats.get('Nr_bands'))
+            nr_fcn  = _val(stats.get('Nr_fcn'))
+            nr_pci  = _val(stats.get('Nr_pci'))
+            nr_bw   = _val(stats.get('Nr_band_widths'))
+            
+            lines.append(_divider(W, 'NR5G'))
+            lines.append(_kv('RSRP', f'{_rsrp_color(nr_rsrp)}{nr_rsrp if nr_rsrp is not None else "—"} dBm{RESET}'))
+            lines.append(_kv('RSRQ', f'{_val(nr_rsrq)} dB'))
+            lines.append(_kv('SNR',  f'{nr_snr_i if nr_snr_i is not None else "—"} dB'))
+            lines.append(_kv('Band / ARFCN', f'n{nr_band}  /  {nr_fcn}'))
+            lines.append(_kv('Cell ID / PCI', f'{_val(stats.get("Nr_cell_id"))}  /  {nr_pci}'))
+            lines.append(_kv('Bandwidth', f'{nr_bw} MHz' if nr_bw != '—' else '—'))
+            lines.append('')
+
+        # ── LTE SECTION (SA or NSA Anchor) ───────────────────────────────────────
+        if has_lte:
+            lte_rsrp = int(lte_rsrp_raw) if lte_rsrp_raw else None
+            lte_rsrq = stats.get('lte_rsrq')
+            lte_snr  = stats.get('Lte_snr')
+            lte_snr_i = int(lte_snr) if lte_snr not in (None, '', 'null') else None
+            
+            lte_band = _val(stats.get('Lte_bands'))
+            lte_fcn  = _val(stats.get('Lte_fcn'))
+            lte_bw_khz = stats.get('Lte_bands_widths')
+            lte_bw_str = f'{int(lte_bw_khz)//1000} MHz' if lte_bw_khz else '—'
+            lte_pci  = _val(stats.get('Lte_pci'))
+            lte_cell_id = _val(stats.get('Lte_cell_id'))
+            ca       = _val(stats.get('Lte_ca_status'))
+
+            lines.append(_divider(W, 'LTE'))
+            lines.append(_kv('RSRP', f'{_rsrp_color(lte_rsrp)}{lte_rsrp if lte_rsrp is not None else "—"} dBm{RESET}'))
+            lines.append(_kv('RSRQ', f'{_val(lte_rsrq)} dB'))
+            lines.append(_kv('SNR',  f'{lte_snr_i if lte_snr_i is not None else "—"} dB'))
+            lines.append(_kv('RSSI', f'{_val(stats.get("lte_rssi"))} dBm'))
+            lines.append(_kv('Band / EARFCN', f'B{lte_band}  /  {lte_fcn}  ({lte_bw_str})'))
+            lines.append(_kv('Cell ID / PCI', f'{lte_cell_id}  /  {lte_pci}'))
+            lines.append(_kv('CA', ca))
+            lines.append('')
 
     # ── neighbor table ────────────────────────────────────────────────────────
     lines.append(_divider(W, f'NEIGHBORS  (last 60s — {len(seen)} cells)'))
