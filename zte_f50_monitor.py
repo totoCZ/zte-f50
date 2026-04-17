@@ -553,6 +553,26 @@ def run(host: Optional[str] = None, username: Optional[str] = None,
                         key = f'B{cell.get("band","?")} PCI{cell.get("pci","?")}'
                         seen[key] = {**cell, '_ts': now_ts}
 
+                # always inject serving cell(s) so the connected tower is always shown
+                for band_key, fcn_key, pci_key, rsrp_key, rsrq_key, sinr_key in [
+                    ('Lte_bands', 'Lte_fcn', 'Lte_pci', 'lte_rsrp', 'lte_rsrq', 'Lte_snr'),
+                    ('Nr_bands',  'Nr_fcn',  'Nr_pci',  'nr_rsrp',  'nr_rsrq',  'Nr_snr'),
+                ]:
+                    band = data.get(band_key)
+                    pci  = data.get(pci_key)
+                    fcn  = data.get(fcn_key)
+                    if band and pci and fcn:
+                        key = f'B{band} PCI{pci}'
+                        seen[key] = {
+                            'band':  band,
+                            'earfcn': fcn,
+                            'pci':   pci,
+                            'rsrp':  data.get(rsrp_key, ''),
+                            'rsrq':  data.get(rsrq_key, ''),
+                            'sinr':  data.get(sinr_key, ''),
+                            '_ts':   now_ts,
+                        }
+
             # evict stale entries
             cutoff = now_ts - NEIGHBOR_TTL
             stale = [k for k, v in seen.items() if v['_ts'] < cutoff]
