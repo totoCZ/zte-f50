@@ -223,10 +223,18 @@ def _divider(width: int, label: str = '') -> str:
 def _kv(label: str, value: Any, width: int = 22) -> str:
     return f'  {DIM}{label:<{width}}{RESET}{value}'
 
+_NR_SENTINEL = 9223372036854775807  # INT64_MAX — modem reports this when NR cell ID is unknown
+
 def _val(v: Any) -> str:
     """Blank-safe value display."""
     s = str(v).strip()
     return s if s and s not in ('null', '') else '—'
+
+def _nr_cell_id(v: Any) -> str:
+    try:
+        return '—' if int(v) == _NR_SENTINEL else str(v)
+    except (TypeError, ValueError):
+        return _val(v)
 
 
 def render(stats: Dict[str, Any], seen: 'OrderedDict[str, dict]',
@@ -315,8 +323,9 @@ def render(stats: Dict[str, Any], seen: 'OrderedDict[str, dict]',
             lines.append(_kv('RSRP', f'{_rsrp_color(nr_rsrp)}{nr_rsrp if nr_rsrp is not None else "—"} dBm{RESET}'))
             lines.append(_kv('RSRQ', f'{_val(nr_rsrq)} dB'))
             lines.append(_kv('SNR',  f'{nr_snr_i if nr_snr_i is not None else "—"} dB'))
-            lines.append(_kv('Band / ARFCN', f'n{nr_band}  /  {nr_fcn}'))
-            lines.append(_kv('Cell ID / PCI', f'{_val(stats.get("Nr_cell_id"))}  /  {nr_pci}'))
+            nr_band_str = f'n{nr_band}' if nr_band != '—' else '—'
+            lines.append(_kv('Band / ARFCN', f'{nr_band_str}  /  {nr_fcn}'))
+            lines.append(_kv('Cell ID / PCI', f'{_nr_cell_id(stats.get("Nr_cell_id"))}  /  {nr_pci}'))
             lines.append(_kv('Bandwidth', f'{nr_bw} MHz' if nr_bw != '—' else '—'))
             lines.append('')
 
@@ -340,7 +349,8 @@ def render(stats: Dict[str, Any], seen: 'OrderedDict[str, dict]',
             lines.append(_kv('RSRQ', f'{_val(lte_rsrq)} dB'))
             lines.append(_kv('SNR',  f'{lte_snr_i if lte_snr_i is not None else "—"} dB'))
             lines.append(_kv('RSSI', f'{_val(stats.get("lte_rssi"))} dBm'))
-            lines.append(_kv('Band / EARFCN', f'B{lte_band}  /  {lte_fcn}  ({lte_bw_str})'))
+            lte_band_str = f'B{lte_band}' if lte_band != '—' else '—'
+            lines.append(_kv('Band / EARFCN', f'{lte_band_str}  /  {lte_fcn}  ({lte_bw_str})'))
             lines.append(_kv('Cell ID / PCI', f'{lte_cell_id}  /  {lte_pci}'))
             lines.append(_kv('CA', ca))
             lines.append('')
