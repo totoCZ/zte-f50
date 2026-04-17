@@ -9,6 +9,7 @@ import sys
 import hashlib
 import os
 import shutil
+import string
 from collections import OrderedDict
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
@@ -28,11 +29,10 @@ def _md5(s: str) -> str:
     return hashlib.md5(s.encode('utf-8')).hexdigest()
 
 def _compute_password(plaintext: str, ld: str) -> str:
-    return _sha256(_sha256(plaintext) + ld.upper())
+    return _sha256(_sha256(plaintext) + ld)
 
 def _compute_ad(cr_version: str, wa_inner_version: str, rd: str) -> str:
     # AD = SHA256(SHA256(wa_inner_version + cr_version) + RD), all uppercase
-    # rd0=wa_inner_version, rd1=cr_version per JS globals set at login
     return _sha256(_sha256(wa_inner_version + cr_version) + rd)
 
 
@@ -135,7 +135,7 @@ class ZTEF50Monitor:
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             'Referer': f'http://{self.host}/index.html',
         })
-
+        
     def _get(self, cmd: str, extra: Optional[dict] = None) -> Optional[dict]:
         params = {'isTest': 'false', 'cmd': cmd}
         if extra:
@@ -162,19 +162,14 @@ class ZTEF50Monitor:
                 f'{self.base_url}/goform/goform_set_cmd_process',
                 data={
                     'isTest': 'false',
-                    'goformId': 'LOGIN_MULTI_USER',
-                    'user': self.username,
+                    'goformId': 'LOGIN',
                     'password': _compute_password(self.password, self.ld),
-                    'AD': _compute_ad(self.cr_version, self.wa_inner_version, self.rd),
+                    '_': str(int(time.time() * 1000)),
                 }, timeout=10)
-            code = str(r.json().get('result'))
-            if code == '3':
+            resp = r.json()
+            if resp.get('loginfo') == 'ok' or str(resp.get('result')) == '0':
                 self.logged_in = True
                 return True
-            if code == '5':
-                self._logout()
-                time.sleep(1)
-                return self.login()
             return False
         except Exception:
             self.logged_in = False
@@ -339,6 +334,7 @@ def run(host: Optional[str] = None, username: Optional[str] = None,
     last_stats: Dict[str, Any] = {}
     error: Optional[str] = None
     failures = 0
+    backoff = interval
 
     try:
         while True:
@@ -348,12 +344,14 @@ def run(host: Optional[str] = None, username: Optional[str] = None,
             if data is None:
                 failures += 1
                 error = f'fetch failed ({failures}× in a row)'
-                if failures >= 3:
-                    mon._new_session()
-                    mon.logged_in = False
-                    failures = 0
+                # exponential backoff: 5s → 10s → 20s → … → 60s max
+                # avoids hammering login endpoint while device reboots
+                backoff = min(interval * (2 ** (failures - 1)), 60)
+                mon._new_session()
+                mon.logged_in = False
             else:
                 failures = 0
+                backoff = interval
                 error = None
                 last_ok = now_ts
                 last_stats = data
@@ -381,7 +379,7 @@ def run(host: Optional[str] = None, username: Optional[str] = None,
             print(render(last_stats, sorted_seen, last_ok, error))
             sys.stdout.flush()
 
-            time.sleep(interval)
+            time.sleep(backoff)
 
     except KeyboardInterrupt:
         _clear()
