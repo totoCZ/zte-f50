@@ -195,18 +195,8 @@ class ZTEF50Monitor:
             ts = int(time.time() * 1000)
             merged: Dict[str, Any] = {}
             
-            # Construct command list including NR (5G) parameters
-            # Note: ZTE APIs often return everything if multi_data=1, but explicit is safer
-            lte_cmd = ('network_type,rssi,rscp,lte_rsrp,lte_snr,ecio,lte_pci,cell_id,'
-                       'Z5g_rsrp,Z5g_snr,Z5g_SINR,Z5g_CELL_ID,lte_rsrq,lte_rssi,'
-                       'Lte_bands,Lte_fcn,Lte_bands_widths,Lte_cell_id')
-            
-            nr_cmd = ('Nr_fcn,Nr_pci,Nr_bands,Nr_band_widths,Nr_cell_id,'
-                      'Nr_signal_strength,Nr_snr,nr_rsrp,nr_rsrq,nr_rssi')
-
+  
             for cmd, extra in [
-                (lte_cmd, {'multi_data': '1', '_': str(ts)}),
-                (nr_cmd, {'multi_data': '1', '_': str(ts + 1)}),
                 ('network_information,Lte_ca_status',
                  {'multi_data': '1', '_': str(ts + 2)}),
                 ('neighbor_cell_info', {'_': str(ts + 3)}),
