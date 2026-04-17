@@ -162,10 +162,11 @@ class ZTEF50Monitor:
                 f'{self.base_url}/goform/goform_set_cmd_process',
                 data={
                     'isTest': 'false',
-                    'goformId': 'LOGIN',
+                    'goformId': 'LOGIN_MULTI_USER',
+                    'user': self.username,
                     'password': _compute_password(self.password, self.ld),
-                    '_': str(int(time.time() * 1000)),
-                }, timeout=10)
+                    'AD': _compute_ad(self.cr_version, self.wa_inner_version, self.rd),
+                    }, timeout=10)
             resp = r.json()
             if resp.get('loginfo') == 'ok' or str(resp.get('result')) == '0':
                 self.logged_in = True
